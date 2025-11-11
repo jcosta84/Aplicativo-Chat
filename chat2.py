@@ -1,16 +1,18 @@
+import customtkinter as ctk
 import tkinter as tk
-from tkinter import simpledialog, filedialog, messagebox, scrolledtext
+from tkinter import messagebox, filedialog
 from sqlalchemy import create_engine, text
 import pandas as pd
 import os
 from datetime import datetime
 
-# --- Conexão com SQL Server ---
+# --- Configurações do banco de dados ---
 server = "192.168.38.2,1433"
 database = "chat"
 username = "instante"
 password = "loucoste9309323"
 driver = "ODBC Driver 17 for SQL Server"
+
 conn_str = f"mssql+pyodbc://{username}:{password}@{server}/{database}?driver={driver}"
 engine = create_engine(conn_str)
 
@@ -31,9 +33,16 @@ def listar_usuarios():
     with engine.begin() as conn:
         return pd.read_sql("SELECT username, Online FROM Usuarios", conn)
 
-def buscar_conversa(remetente, destinatario):
+def enviar_mensagem(remetente, destinatario, mensagem, anexo=None):
     with engine.begin() as conn:
-        return pd.read_sql(
+        conn.execute(
+            text("INSERT INTO Mensagens (Remetente, Destinatario, Mensagem, Anexo) VALUES (:r, :d, :m, :a)"),
+            {"r": remetente, "d": destinatario, "m": mensagem, "a": anexo}
+        )
+
+def buscar_mensagens(usuario, contato):
+    with engine.begin() as conn:
+        df = pd.read_sql(
             text("""
                 SELECT Remetente, Destinatario, Mensagem, Anexo, DataEnvio
                 FROM Mensagens
@@ -42,103 +51,148 @@ def buscar_conversa(remetente, destinatario):
                 ORDER BY DataEnvio
             """),
             conn,
-            params={"u": remetente, "d": destinatario}
+            params={"u": usuario, "d": contato}
         )
+    return df
 
-def enviar_mensagem(remetente, destinatario, mensagem, arquivo_path=None):
-    with engine.begin() as conn:
-        conn.execute(
-            text("INSERT INTO Mensagens (Remetente, Destinatario, Mensagem, Anexo) VALUES (:r, :d, :m, :a)"),
-            {"r": remetente, "d": destinatario, "m": mensagem, "a": arquivo_path}
-        )
+# --- Inicialização do app ---
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("dark-blue")
+
+root = ctk.CTk()
+root.title("Chat Avançado")
+root.geometry("900x600")
+
+# Variáveis globais
+usuario = None
 
 # --- Login ---
-root = tk.Tk()
-root.withdraw()  # Oculta janela principal durante login
+def tela_login():
+    global usuario
+    frame_login = ctk.CTkFrame(root)
+    frame_login.pack(fill="both", expand=True, padx=20, pady=20)
 
-usuario = simpledialog.askstring("Login", "Usuário:")
-senha = simpledialog.askstring("Login", "Senha:", show="*")
+    ctk.CTkLabel(frame_login, text="🔑 Login no Chat", font=("Arial", 24)).pack(pady=20)
+    entry_user = ctk.CTkEntry(frame_login, placeholder_text="Usuário")
+    entry_user.pack(pady=10)
+    entry_senha = ctk.CTkEntry(frame_login, placeholder_text="Senha", show="*")
+    entry_senha.pack(pady=10)
 
-if not autenticar_usuario(usuario, senha):
-    messagebox.showerror("Erro", "Usuário ou senha incorretos")
-    exit()
-atualizar_status(usuario, 1)
+    def login_callback():
+        global usuario  # <-- trocar nonlocal por global
+        nome = entry_user.get()
+        senha = entry_senha.get()
+        if autenticar_usuario(nome, senha):
+            usuario = nome
+            atualizar_status(nome, 1)
+            frame_login.destroy()
+            tela_chat()
+        else:
+            messagebox.showerror("Erro", "Usuário ou senha incorretos")
 
-root.deiconify()  # Mostra janela principal
-root.title(f"Chat Avançado - Usuário: {usuario}")
-root.geometry("800x600")
+    btn_login = ctk.CTkButton(frame_login, text="Entrar", command=login_callback)
+    btn_login.pack(pady=20)
 
-# --- Layout ---
-frame_contatos = tk.Frame(root, width=200)
-frame_contatos.pack(side=tk.LEFT, fill=tk.Y)
+# --- Chat ---
+def tela_chat():
+    global usuario
+    root.grid_rowconfigure(0, weight=1)
+    root.grid_columnconfigure(1, weight=1)
 
-frame_chat = tk.Frame(root)
-frame_chat.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+    # Sidebar de contatos
+    frame_sidebar = ctk.CTkFrame(root, width=200)
+    frame_sidebar.grid(row=0, column=0, sticky="ns")
+    ctk.CTkLabel(frame_sidebar, text="📨 Contatos", font=("Arial", 16)).pack(pady=10)
 
-# Contatos
-tk.Label(frame_contatos, text="Contatos").pack()
-usuarios_df = listar_usuarios()
-usuarios_list = [u for u in usuarios_df["username"].tolist() if u != usuario]
-destinatario_var = tk.StringVar(value=usuarios_list[0] if usuarios_list else "")
+    lista_usuarios = listar_usuarios()
+    lista_usuarios = lista_usuarios[lista_usuarios["username"] != usuario]
+    listbox_contatos = tk.Listbox(frame_sidebar)
+    listbox_contatos.pack(fill="both", expand=True, padx=10, pady=10)
+    for u in lista_usuarios["username"]:
+        status = "🟢 Online" if lista_usuarios[lista_usuarios["username"] == u]["Online"].values[0] else "⚪ Offline"
+        listbox_contatos.insert(tk.END, f"{u} {status}")
 
-listbox = tk.Listbox(frame_contatos, listvariable=tk.StringVar(value=usuarios_list))
-listbox.pack(fill=tk.BOTH, expand=True)
+    def logout():
+        atualizar_status(usuario, 0)
+        root.destroy()
 
-# Caixa de chat
-chat_text = scrolledtext.ScrolledText(frame_chat)
-chat_text.pack(fill=tk.BOTH, expand=True)
+    btn_logout = ctk.CTkButton(frame_sidebar, text="Sair", command=logout)
+    btn_logout.pack(pady=10)
 
-mensagem_var = tk.StringVar()
+    # Frame principal do chat
+    frame_chat = ctk.CTkFrame(root)
+    frame_chat.grid(row=0, column=1, sticky="nsew")
+    frame_chat.grid_rowconfigure(0, weight=1)
+    frame_chat.grid_columnconfigure(0, weight=1)
 
-entry_frame = tk.Frame(frame_chat)
-entry_frame.pack(fill=tk.X)
+    # Canvas para mensagens
+    canvas_chat = tk.Canvas(frame_chat, bg="#1e1e1e")
+    scrollbar = tk.Scrollbar(frame_chat, orient="vertical", command=canvas_chat.yview)
+    canvas_chat.configure(yscrollcommand=scrollbar.set)
+    scrollbar.grid(row=0, column=1, sticky="ns")
+    canvas_chat.grid(row=0, column=0, sticky="nsew")
 
-entry = tk.Entry(entry_frame, textvariable=mensagem_var)
-entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    frame_messages = ctk.CTkFrame(canvas_chat, fg_color="transparent")
+    canvas_chat.create_window((0,0), window=frame_messages, anchor="nw")
 
-def enviar_callback():
-    destinatario = listbox.get(tk.ACTIVE)
-    mensagem = mensagem_var.get()
-    arquivo_path = None
+    def atualizar_chat():
+        for widget in frame_messages.winfo_children():
+            widget.destroy()
+        contato = listbox_contatos.get(tk.ACTIVE)
+        if not contato:
+            return
+        msgs = buscar_mensagens(usuario, contato)
+        for _, row in msgs.iterrows():
+            remetente = row["Remetente"]
+            texto = row["Mensagem"]
+            if remetente == usuario:
+                lbl = ctk.CTkLabel(frame_messages, text=texto, anchor="e", fg_color="#3b82f6", corner_radius=10)
+            else:
+                lbl = ctk.CTkLabel(frame_messages, text=texto, anchor="w", fg_color="#525252", corner_radius=10)
+            lbl.pack(fill="x", pady=2, padx=5)
+        frame_messages.update_idletasks()
+        canvas_chat.configure(scrollregion=canvas_chat.bbox("all"))
+        canvas_chat.yview_moveto(1.0)
 
-    file = filedialog.askopenfilename(title="Selecionar arquivo", 
-                                      filetypes=[("Arquivos", "*.png *.jpg *.jpeg *.pdf")])
-    if file:
-        pasta = "uploads"
-        os.makedirs(pasta, exist_ok=True)
-        nome_arquivo = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{os.path.basename(file)}"
-        arquivo_path = os.path.join(pasta, nome_arquivo)
-        with open(file, "rb") as f_in, open(arquivo_path, "wb") as f_out:
-            f_out.write(f_in.read())
+    # Barra inferior fixa
+    frame_bottom = ctk.CTkFrame(frame_chat, height=60)
+    frame_bottom.grid(row=1, column=0, columnspan=2, sticky="ew")
+    frame_bottom.grid_columnconfigure(0, weight=1)
 
-    enviar_mensagem(usuario, destinatario, mensagem, arquivo_path)
-    mensagem_var.set("")
+    mensagem_var = tk.StringVar()
+    entry_msg = ctk.CTkEntry(frame_bottom, textvariable=mensagem_var)
+    entry_msg.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+
+    arquivo_path_var = tk.StringVar(value="")
+
+    def selecionar_arquivo():
+        path = filedialog.askopenfilename(filetypes=[("Arquivos", "*.png *.jpg *.jpeg *.pdf")])
+        arquivo_path_var.set(path)
+
+    btn_arquivo = ctk.CTkButton(frame_bottom, text="📎", width=40, command=selecionar_arquivo)
+    btn_arquivo.grid(row=0, column=1, padx=5, pady=5)
+
+    def enviar_callback():
+        contato = listbox_contatos.get(tk.ACTIVE)
+        if not contato:
+            messagebox.showwarning("Aviso", "Selecione um contato")
+            return
+        enviar_mensagem(usuario, contato, mensagem_var.get(), arquivo_path_var.get() if arquivo_path_var.get() else None)
+        mensagem_var.set("")
+        arquivo_path_var.set("")
+        atualizar_chat()
+
+    btn_enviar = ctk.CTkButton(frame_bottom, text="Enviar", command=enviar_callback)
+    btn_enviar.grid(row=0, column=2, padx=5, pady=5)
+
+    # Atualizar chat a cada seleção de contato
+    def on_select(evt):
+        atualizar_chat()
+
+    listbox_contatos.bind("<<ListboxSelect>>", on_select)
+
     atualizar_chat()
 
-def atualizar_chat():
-    destinatario = listbox.get(tk.ACTIVE)
-    conversa_df = buscar_conversa(usuario, destinatario)
-    chat_text.delete("1.0", tk.END)
-    for _, row in conversa_df.iterrows():
-        remetente = row["Remetente"]
-        msg = row["Mensagem"]
-        chat_text.insert(tk.END, f"{remetente}: {msg}\n")
-        if row["Anexo"]:
-            chat_text.insert(tk.END, f"📎 {row['Anexo']}\n")
-    chat_text.see(tk.END)
-
-enviar_btn = tk.Button(entry_frame, text="Enviar", command=enviar_callback)
-enviar_btn.pack(side=tk.RIGHT)
-
-# Atualizar chat ao selecionar outro contato
-def contato_selecionado(event):
-    atualizar_chat()
-listbox.bind("<<ListboxSelect>>", contato_selecionado)
-
-# Atualizar chat a cada 5 segundos
-def refresh_loop():
-    atualizar_chat()
-    root.after(5000, refresh_loop)
-
-refresh_loop()
+# --- Executar app ---
+tela_login()
 root.mainloop()
